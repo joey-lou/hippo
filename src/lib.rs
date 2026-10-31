@@ -4,6 +4,7 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod embed;
+pub mod encoder;
 pub mod error;
 pub mod frontmatter;
 pub mod hygiene;

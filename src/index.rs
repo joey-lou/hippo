@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS memories (
     last_accessed TEXT,
     embedding     TEXT
 );
+CREATE TABLE IF NOT EXISTS memory_vectors (
+    id           TEXT NOT NULL,
+    encoder      TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    vector       TEXT NOT NULL,
+    PRIMARY KEY (id, encoder)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     title, keywords, body, id UNINDEXED,
     tokenize = 'porter unicode61'
@@ -141,7 +148,69 @@ pub fn delete(conn: &Connection, memory_id: &str) -> Result<()> {
         .map_err(HippoError::unexpected)?;
     conn.execute("DELETE FROM memories_fts WHERE id = ?1", [memory_id])
         .map_err(HippoError::unexpected)?;
+    conn.execute("DELETE FROM memory_vectors WHERE id = ?1", [memory_id])
+        .map_err(HippoError::unexpected)?;
     Ok(())
+}
+
+pub fn put_vector(
+    conn: &Connection,
+    memory_id: &str,
+    encoder: &str,
+    content_hash: &str,
+    vector: &[f64],
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO memory_vectors (id, encoder, content_hash, vector)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id, encoder) DO UPDATE SET content_hash = excluded.content_hash, vector = excluded.vector",
+        rusqlite::params![memory_id, encoder, content_hash, json!(vector).to_string()],
+    )
+    .map_err(HippoError::unexpected)?;
+    Ok(())
+}
+
+pub fn vector_is_current(
+    conn: &Connection,
+    memory_id: &str,
+    encoder: &str,
+    content_hash: &str,
+) -> Result<bool> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM memory_vectors WHERE id = ?1 AND encoder = ?2 AND content_hash = ?3",
+            rusqlite::params![memory_id, encoder, content_hash],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(HippoError::unexpected)?;
+    Ok(found.is_some())
+}
+
+/// Memories whose stored vector matches the current file, and the number of memories.
+pub fn vector_coverage(conn: &Connection, encoder: &str) -> Result<(usize, usize)> {
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+        .map_err(HippoError::unexpected)?;
+    let ready: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories m
+             JOIN memory_vectors v ON v.id = m.id AND v.content_hash = m.content_hash
+             WHERE v.encoder = ?1",
+            [encoder],
+            |row| row.get(0),
+        )
+        .map_err(HippoError::unexpected)?;
+    Ok((ready as usize, total as usize))
+}
+
+pub fn indexed_text(memory: &Memory) -> String {
+    format!(
+        "{} {} {}",
+        memory.title,
+        memory.keywords.join(" "),
+        memory.body
+    )
 }
 
 pub fn record_access(conn: &Connection, ids: &[String], when: &str) -> Result<()> {
@@ -181,11 +250,5 @@ fn usage(conn: &Connection, memory_id: &str) -> Result<(i64, Option<String>)> {
 }
 
 fn embedding_json(memory: &Memory) -> String {
-    let text = format!(
-        "{} {} {}",
-        memory.title,
-        memory.keywords.join(" "),
-        memory.body
-    );
-    json!(embed::embed(&text)).to_string()
+    json!(embed::embed(&indexed_text(memory))).to_string()
 }

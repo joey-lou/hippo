@@ -16,6 +16,7 @@ use hippo_cli::hygiene::{self, analyze};
 use hippo_cli::index;
 use hippo_cli::ranking::{self, RECENCY_WEIGHT, USAGE_WEIGHT};
 use hippo_cli::render;
+use hippo_cli::search;
 use hippo_cli::store::{self, Memory, MemoryPatch, NewMemory};
 use hippo_cli::MemoryStore;
 
@@ -356,6 +357,147 @@ fn hashing_embedding() {
         ["document-indexing-note"]
     );
     assert!(hits[0].snippet.contains("full-text"));
+
+    let off_home = fresh_home(false);
+    let mut off = MemoryStore::with_encoder(Some(&off_home), None, Some("off")).unwrap();
+    off.add(
+        NewMemory {
+            title: "Document indexing note".into(),
+            keywords: vec!["documents".into(), "retrieval".into()],
+            body: "Use full-text search for documents.".into(),
+            ..draft("", &[], "")
+        },
+        false,
+    )
+    .unwrap();
+    assert!(off.query("fulltext", 5).unwrap().is_empty());
+}
+
+#[test]
+fn neural_rank_keeps_a_strong_keyword_hit_ahead() {
+    let home = fresh_home(false);
+    let mut store = MemoryStore::new(Some(&home), None).unwrap();
+    let strong = store
+        .add(
+            NewMemory {
+                title: "Alpha beta gamma".into(),
+                keywords: vec!["alpha".into(), "beta".into(), "gamma".into()],
+                body: "Alpha beta gamma is the exact phrase in this note.".into(),
+                ..draft("", &[], "")
+            },
+            false,
+        )
+        .unwrap();
+    let near = store
+        .add(
+            NewMemory {
+                title: "Other topic".into(),
+                keywords: vec!["cooking".into(), "dinner".into()],
+                body: "Recipes for dinner tonight with no shared query terms.".into(),
+                ..draft("", &[], "")
+            },
+            false,
+        )
+        .unwrap();
+    // FTS5 IDF is ~0 when a term hits half the rows, so BM25 stays near zero
+    // until the matching terms are rare in the index.
+    for i in 0..24 {
+        store
+            .add(
+                NewMemory {
+                    title: format!("Padding note {i:02}"),
+                    keywords: vec![format!("pad{i}"), "unrelated".into()],
+                    body: "This padding note exists so rare keywords earn a strong BM25 score."
+                        .into(),
+                    ..draft("", &[], "")
+                },
+                false,
+            )
+            .unwrap();
+    }
+    let conn = index::connect(&home).unwrap();
+    index::put_vector(
+        &conn,
+        &strong.id,
+        "bge-small",
+        &strong.content_hash,
+        &[1.0, 0.0],
+    )
+    .unwrap();
+    index::put_vector(
+        &conn,
+        &near.id,
+        "bge-small",
+        &near.content_hash,
+        &[0.0, 1.0],
+    )
+    .unwrap();
+    let hits = search::query_neural(
+        &conn,
+        "alpha beta gamma",
+        5,
+        "global",
+        "bge-small",
+        &[0.0, 1.0],
+    )
+    .unwrap();
+    let detail: Vec<_> = hits
+        .iter()
+        .map(|hit| format!("{} {:.4}", hit.id, hit.score))
+        .collect();
+    assert_eq!(hits[0].id, strong.id, "{detail:?}");
+
+    let weak_home = fresh_home(false);
+    let mut weak = MemoryStore::new(Some(&weak_home), None).unwrap();
+    let left = weak
+        .add(
+            NewMemory {
+                title: "Left note".into(),
+                keywords: vec!["left".into()],
+                body: "Nothing shared with the query words here at all, just filler text.".into(),
+                ..draft("", &[], "")
+            },
+            false,
+        )
+        .unwrap();
+    let right = weak
+        .add(
+            NewMemory {
+                title: "Right note".into(),
+                keywords: vec!["right".into()],
+                body: "Also unrelated wording, stored so both notes exist.".into(),
+                ..draft("", &[], "")
+            },
+            false,
+        )
+        .unwrap();
+    let conn = index::connect(&weak_home).unwrap();
+    index::put_vector(
+        &conn,
+        &left.id,
+        "bge-small",
+        &left.content_hash,
+        &[1.0, 0.0],
+    )
+    .unwrap();
+    index::put_vector(
+        &conn,
+        &right.id,
+        "bge-small",
+        &right.content_hash,
+        &[0.0, 1.0],
+    )
+    .unwrap();
+    let hits = search::query_neural(
+        &conn,
+        "airport origin",
+        5,
+        "global",
+        "bge-small",
+        &[0.0, 1.0],
+    )
+    .unwrap();
+    assert_eq!(hits[0].id, right.id);
 }
 
 #[test]

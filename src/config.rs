@@ -40,6 +40,18 @@ pub fn resolve_home(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(home)
 }
 
+/// `--embed`, then `HIPPO_EMBED`, then `embed` in the config file.
+/// Callers default to `hash` when this returns `None`.
+pub fn resolve_embed(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("HIPPO_EMBED").ok())
+        .filter(|value| !value.is_empty())
+        .or_else(embed_from_config)
+        .filter(|value| !value.is_empty())
+}
+
 pub fn resolve_scope(explicit: Option<&str>, start: Option<&Path>) -> String {
     let marker = scope_from_marker(start.unwrap_or(&std::env::current_dir().unwrap_or_default()));
     explicit
@@ -60,6 +72,15 @@ pub fn resolve_source(explicit: Option<String>) -> Option<String> {
         // Pi before Cursor: a Cursor model inside Pi sets both.
         .or_else(|| env_set("PI_CODING_AGENT").then(|| "pi".to_string()))
         .or_else(|| env_set("CURSOR_AGENT").then(|| "cursor".to_string()))
+}
+
+fn embed_from_config() -> Option<String> {
+    let text = std::fs::read_to_string(config_path()).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    value
+        .get("embed")
+        .and_then(|item| item.as_str())
+        .map(str::to_string)
 }
 
 fn home_from_config() -> Option<PathBuf> {

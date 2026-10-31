@@ -26,7 +26,10 @@ Memories go in a folder you choose. Set it in `~/.config/hippo/config.toml`:
 
 ```toml
 home = "~/memories"
+# embed = "hash"   # hash (default), off, bge-small, bge-base, bge-m3
 ```
+
+`embed` picks the vector used at search time. `hash` is the built-in hashing embedding. `off` is keyword search only. The `bge-*` options download a model on first use into `~/.cache/hippo/models` and store one vector per note. `hippo reindex --all` builds those vectors. `hippo encoder list` prints the choices, and `hippo encoder bench` times load and a single embedding. `--embed` and `HIPPO_EMBED` override the config for one command.
 
 `HIPPO_HOME` points at the same folder. Hippo creates it if it is missing. Each memory is a markdown file under `<home>/memory/`.
 
@@ -47,6 +50,7 @@ Agents use these. JSON shapes and the rest of the contract are in [adapters/READ
 | `hippo sync [--file PATH]`                                                        | Reindex, then commit and push the memory folder.                      |
 | `hippo digest [--format md\|json]`                                                | Short summary: how many memories, and the top topics.                 |
 | `hippo consolidate [--apply] [--json]`                                            | Near-duplicates and contradictions. `--apply` merges duplicates only. |
+| `hippo encoder list` / `hippo encoder bench`                                      | List encoders, or time model load and one embedding.                  |
 
 Exit `0` on success. Exit `2` when the input is invalid or the memory does not exist.
 
