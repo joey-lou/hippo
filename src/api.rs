@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use fastembed::TextEmbedding;
 use serde::Serialize;
 
 use crate::capture::{self, Assessment};
 use crate::config::{self, GLOBAL_SCOPE};
+use crate::encoder::{self, Encoder};
 use crate::error::{HippoError, Result};
 use crate::hygiene::{self, Cluster, HygieneReport, Notice};
 use crate::index::{self, ReindexResult};
 use crate::ranking;
 use crate::render;
-use crate::search::{self, Hit};
+use crate::search::{self, Hit, Recall};
 use crate::store::{self, Memory, MemoryPatch, NewMemory};
 use crate::vcs::{self, GitStatus, SyncReport};
 
@@ -37,15 +40,32 @@ pub struct MemoryStore {
     pub home: PathBuf,
     pub scope: String,
     pub capture_warnings: Vec<String>,
+    encoder: Encoder,
+    model: Mutex<Option<TextEmbedding>>,
 }
 
 impl MemoryStore {
     pub fn new(home: Option<&Path>, scope: Option<&str>) -> Result<Self> {
+        Self::with_encoder(home, scope, None)
+    }
+
+    pub fn with_encoder(
+        home: Option<&Path>,
+        scope: Option<&str>,
+        embed: Option<&str>,
+    ) -> Result<Self> {
+        let name = config::resolve_embed(embed).unwrap_or_else(|| "hash".to_string());
         Ok(Self {
             home: config::resolve_home(home)?,
             scope: config::resolve_scope(scope, None),
             capture_warnings: Vec::new(),
+            encoder: Encoder::parse(&name)?,
+            model: Mutex::new(None),
         })
+    }
+
+    pub fn encoder_name(&self) -> &'static str {
+        self.encoder.name
     }
 
     pub fn query(&self, text: &str, k: usize) -> Result<Vec<Hit>> {
@@ -54,7 +74,17 @@ impl MemoryStore {
 
     pub fn query_at(&self, text: &str, k: usize, now: chrono::NaiveDate) -> Result<Vec<Hit>> {
         let conn = index::connect(&self.home)?;
-        let hits = search::query(&conn, text, k, &self.scope, now)?;
+        let hits = if self.encoder.is_neural() {
+            let vector = self.embed_one(text)?;
+            search::query_neural(&conn, text, k, &self.scope, self.encoder.name, &vector)?
+        } else {
+            let recall = if self.encoder.name == "off" {
+                Recall::Off
+            } else {
+                Recall::Hash
+            };
+            search::query(&conn, text, k, &self.scope, now, recall)?
+        };
         let ids: Vec<String> = hits.iter().map(|hit| hit.id.clone()).collect();
         index::record_access(&conn, &ids, &now.format("%Y-%m-%d").to_string())?;
         Ok(hits)
@@ -87,7 +117,7 @@ impl MemoryStore {
         )?;
         let memory = store::write_new(&self.home, draft)?;
         let conn = index::connect(&self.home)?;
-        index::upsert(&conn, &memory)?;
+        self.index_memory(&conn, &memory)?;
         Ok(memory)
     }
 
@@ -101,7 +131,7 @@ impl MemoryStore {
         self.guard(&title, &body, &keywords, confidence, force)?;
         let memory = store::update(&self.home, memory_id, patch)?;
         let conn = index::connect(&self.home)?;
-        index::upsert(&conn, &memory)?;
+        self.index_memory(&conn, &memory)?;
         Ok(memory)
     }
 
@@ -172,9 +202,9 @@ impl MemoryStore {
         let memories = store::load_all(&self.home)?;
         let conn = index::connect(&self.home)?;
         let result = if changed_only {
-            reindex_changed(&conn, &memories)?
+            reindex_changed(self, &conn, &memories)?
         } else {
-            reindex_all(&conn, &memories)?
+            reindex_all(self, &conn, &memories)?
         };
         Ok(result)
     }
@@ -219,7 +249,54 @@ impl MemoryStore {
             actions: Vec::new(),
         };
         report.actions = suggest_actions(&report, &git, &memories);
+        if self.encoder.is_neural() {
+            let (ready, total) = index::vector_coverage(&conn, self.encoder.name)?;
+            if ready < total {
+                report.actions.insert(
+                    0,
+                    format!(
+                        "hippo reindex --all  # {ready} of {total} notes have {} vectors",
+                        self.encoder.name
+                    ),
+                );
+            }
+        }
         Ok(report)
+    }
+
+    pub fn bench_encoder(&self) -> Result<encoder::Bench> {
+        self.encoder.bench()
+    }
+
+    fn index_memory(&self, conn: &rusqlite::Connection, memory: &Memory) -> Result<()> {
+        index::upsert(conn, memory)?;
+        if self.encoder.is_neural() {
+            let vector = self.embed_one(&index::indexed_text(memory))?;
+            index::put_vector(
+                conn,
+                &memory.id,
+                self.encoder.name,
+                &memory.content_hash,
+                &vector,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn embed_one(&self, text: &str) -> Result<Vec<f64>> {
+        let mut slot = self.model.lock().map_err(HippoError::unexpected)?;
+        if slot.is_none() {
+            *slot = Some(self.encoder.load_model()?);
+        }
+        let model = slot.as_mut().expect("model loaded");
+        let embedded = self.encoder.embed(model, &[text])?;
+        Ok(embedded
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| f64::from(value))
+            .collect())
     }
 
     fn guard(
@@ -278,7 +355,7 @@ impl MemoryStore {
             },
         )?;
         let conn = index::connect(&self.home)?;
-        index::upsert(&conn, &memory)?;
+        self.index_memory(&conn, &memory)?;
         let mut removed = Vec::new();
         for other in others {
             store::delete(&self.home, &other.id)?;
@@ -289,10 +366,14 @@ impl MemoryStore {
     }
 }
 
-fn reindex_all(conn: &rusqlite::Connection, memories: &[Memory]) -> Result<ReindexResult> {
+fn reindex_all(
+    store: &MemoryStore,
+    conn: &rusqlite::Connection,
+    memories: &[Memory],
+) -> Result<ReindexResult> {
     let stored = index::stored_hashes(conn)?;
     for memory in memories {
-        index::upsert(conn, memory)?;
+        store.index_memory(conn, memory)?;
     }
     let live: std::collections::HashSet<&str> =
         memories.iter().map(|memory| memory.id.as_str()).collect();
@@ -307,19 +388,30 @@ fn reindex_all(conn: &rusqlite::Connection, memories: &[Memory]) -> Result<Reind
     })
 }
 
-fn reindex_changed(conn: &rusqlite::Connection, memories: &[Memory]) -> Result<ReindexResult> {
+fn reindex_changed(
+    store: &MemoryStore,
+    conn: &rusqlite::Connection,
+    memories: &[Memory],
+) -> Result<ReindexResult> {
     let stored = index::stored_hashes(conn)?;
     let mut result = ReindexResult::default();
     let mut seen = std::collections::HashSet::new();
     for memory in memories {
         seen.insert(memory.id.clone());
+        let stale_vector = store.encoder.is_neural()
+            && !index::vector_is_current(
+                conn,
+                &memory.id,
+                store.encoder.name,
+                &memory.content_hash,
+            )?;
         match stored.get(&memory.id) {
             None => {
-                index::upsert(conn, memory)?;
+                store.index_memory(conn, memory)?;
                 result.added += 1;
             }
-            Some(hash) if hash != &memory.content_hash => {
-                index::upsert(conn, memory)?;
+            Some(hash) if hash != &memory.content_hash || stale_vector => {
+                store.index_memory(conn, memory)?;
                 result.updated += 1;
             }
             _ => {}

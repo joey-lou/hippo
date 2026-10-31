@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::adapter;
 use crate::api::MemoryStore;
 use crate::config::{self, GLOBAL_SCOPE};
+use crate::encoder::Encoder;
 use crate::error::{HippoError, Result};
 use crate::hygiene::{Finding, HygieneReport, Notice};
 use crate::store::{MemoryPatch, NewMemory, DEFAULT_CATEGORY};
@@ -21,8 +22,19 @@ struct Cli {
     /// Active scope (default: resolved / global).
     #[arg(long, global = true)]
     scope: Option<String>,
+    /// Vector encoder: hash, off, bge-small, bge-base, or bge-m3.
+    #[arg(long, global = true)]
+    embed: Option<String>,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Subcommand)]
+enum EncoderCommand {
+    /// List the encoders Hippo can run.
+    List,
+    /// Time model load and one query embedding. Process startup is not included.
+    Bench,
 }
 
 #[derive(Subcommand)]
@@ -114,6 +126,11 @@ enum Command {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// List encoders, or time the active one.
+    Encoder {
+        #[command(subcommand)]
+        command: EncoderCommand,
+    },
     /// Report index drift, git state, and suggested actions.
     Status {
         #[arg(long)]
@@ -142,18 +159,18 @@ pub fn run() -> Result<()> {
     let Cli {
         home,
         scope,
+        embed,
         command,
     } = Cli::parse();
     let command = match command {
         Command::Adapter { command } => return run_adapter(command),
+        Command::Encoder { command } => return run_encoder(command, embed.as_deref()),
         other => other,
     };
-    let mut store = MemoryStore::new(home.as_deref(), scope.as_deref())?;
+    let mut store = MemoryStore::with_encoder(home.as_deref(), scope.as_deref(), embed.as_deref())?;
     match command {
-        Command::Adapter { .. } => {
-            return Err(HippoError::Unexpected(
-                "adapter command reached the store".into(),
-            ))
+        Command::Adapter { .. } | Command::Encoder { .. } => {
+            return Err(HippoError::Unexpected("command reached the store".into()))
         }
         Command::Query { text, k, json } => {
             let hits = store.query(&text, k)?;
@@ -351,6 +368,29 @@ pub fn run() -> Result<()> {
             }
         }
         Command::Path { memory_id } => println!("{}", store.path(&memory_id)?.display()),
+    }
+    Ok(())
+}
+
+fn run_encoder(command: EncoderCommand, embed: Option<&str>) -> Result<()> {
+    match command {
+        EncoderCommand::List => {
+            for encoder in Encoder::list() {
+                println!("{}\t{}", encoder.name, encoder.describe());
+            }
+        }
+        EncoderCommand::Bench => {
+            let name = config::resolve_embed(embed).unwrap_or_else(|| "hash".to_string());
+            let encoder = Encoder::parse(&name)?;
+            let bench = encoder.bench()?;
+            println!(
+                "encoder={} load_s={:.3} query_s={:.3} passage_s={:.3}",
+                bench.encoder,
+                bench.load.as_secs_f64(),
+                bench.query.as_secs_f64(),
+                bench.passage.as_secs_f64()
+            );
+        }
     }
     Ok(())
 }

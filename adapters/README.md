@@ -25,13 +25,15 @@ All JSON is emitted on stdout with `--json` (or `--format json`).
    "snippet": "...", "scope": "global"}
 ]
 ```
-Lower `score` = better. It is BM25 minus boosts for the active scope, update
+Lower `score` = better. With the default `hash` encoder it is BM25 minus boosts for the active scope, update
 recency, and recall frequency, minus `1.0 * max(cosine, 0)` from a cached hashing
 embedding (word tokens and character trigrams — not a neural model). That second
 signal lifts memories that share subword shape when the FTS tokenizer misses
 (`fulltext` vs `full-text`). It does not understand synonyms. A neighbor with no
 BM25 hit starts from a miss penalty of 8.0 before those boosts. Treat `score` as
 an opaque ordering signal, not a raw BM25 value. Recall unions `global` + active scope.
+
+`embed` in `~/.config/hippo/config.toml` (or `--embed` / `HIPPO_EMBED`) can be `hash`, `off`, `bge-small`, `bge-base`, or `bge-m3`. `off` drops the vector term. A `bge-*` encoder ranks by cosine of that model's vectors and keeps a strong keyword hit (raw BM25 below -8) ahead of a vector-only hit. Those vectors live in the index, keyed by encoder name, and are rebuilt with `hippo reindex --all`. The markdown files stay put. `hippo status` says when the active encoder is missing vectors.
 
 ### `hippo add [--title --keywords --tags --category --scope --source --body --reason --confidence --force] [--json]`
 Body is read from stdin when `--body` is omitted. Or pass `--from-json` to read
