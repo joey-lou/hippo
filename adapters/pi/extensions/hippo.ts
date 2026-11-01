@@ -1,10 +1,9 @@
 // Pi session adapter. Fails open: a missing hippo binary must not break the session.
-// Install: adapters/pi/install.sh
-// `hippo add` and `hippo update` commit and push on their own. This adapter
-// injects the digest, syncs memory files edited with Pi's edit and write tools,
-// and checks for unsynced work once before Pi settles.
-// On cursor/* models the Cursor SDK runs Cursor's hippo hooks for edits and the
-// end-of-turn check, so this adapter leaves those turns to them.
+// Install: `hippo adapter install pi`, or adapters/pi/install.sh from a checkout.
+// The model provider does not matter. OpenRouter and any other Pi backend use
+// these same events. `hippo add` and `hippo update` commit and push on their own.
+// This adapter injects the digest, syncs memory files edited with Pi's edit and
+// write tools, and checks for unsynced work once before Pi settles.
 
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -13,7 +12,6 @@ const FILE_TOOLS = new Set(["edit", "write"]);
 
 export default function (pi) {
   const hippo = (args, timeout = 20000) => pi.exec("hippo", args, { timeout });
-  const cursorOwnsTurn = (ctx) => ctx.model?.provider === "cursor";
   let nudged = false;
 
   pi.on("session_start", async () => {
@@ -46,13 +44,13 @@ export default function (pi) {
   });
 
   pi.on("tool_result", async (event, ctx) => {
-    if (event.isError || !FILE_TOOLS.has(event.toolName) || cursorOwnsTurn(ctx)) return;
+    if (event.isError || !FILE_TOOLS.has(event.toolName)) return;
     const file = resolve(ctx.cwd, String(event.input.path).replace(/^~(?=\/|$)/, homedir()));
     await hippo(["sync", "--file", file], 30000).catch(() => {});
   });
 
-  pi.on("agent_before_settle", async (event, ctx) => {
-    if (nudged || event.continue || cursorOwnsTurn(ctx)) return;
+  pi.on("agent_before_settle", async (event) => {
+    if (nudged || event.continue) return;
     const notice = await unsyncedNotice(hippo);
     if (!notice) return;
     nudged = true;

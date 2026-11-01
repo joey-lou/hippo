@@ -69,7 +69,6 @@ pub fn resolve_source(explicit: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .or_else(|| std::env::var("HIPPO_SOURCE").ok())
         .filter(|value| !value.is_empty())
-        // Pi before Cursor: a Cursor model inside Pi sets both.
         .or_else(|| env_set("PI_CODING_AGENT").then(|| "pi".to_string()))
         .or_else(|| env_set("CURSOR_AGENT").then(|| "cursor".to_string()))
 }

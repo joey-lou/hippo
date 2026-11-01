@@ -43,7 +43,6 @@ fn hook(script: &str, home: &Path, payload: &str, env: &[(&str, &str)]) -> Outpu
         .arg(adapters().join("cursor/hooks").join(script))
         .env("PATH", path)
         .env("HIPPO_HOME", home)
-        .env_remove("PI_CODING_AGENT")
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -99,22 +98,19 @@ fn after_file_edit_commits_memory_edits_only() {
 }
 
 #[test]
-fn session_start_leaves_the_digest_to_pi() {
+fn session_start_injects_the_digest() {
     let home = temp_dir();
-    let cursor = hook("hippo-session-start.sh", &home, "{}", &[]);
-    let context: serde_json::Value = serde_json::from_slice(&cursor.stdout).unwrap();
-    assert!(context["additional_context"]
-        .as_str()
-        .unwrap()
-        .contains("What's in memory"));
-
-    let inside_pi = hook(
-        "hippo-session-start.sh",
-        &home,
-        "{}",
-        &[("PI_CODING_AGENT", "true")],
-    );
-    assert_eq!(String::from_utf8_lossy(&inside_pi.stdout).trim(), "{}");
+    for env in [&[][..], &[("PI_CODING_AGENT", "true")][..]] {
+        let cursor = hook("hippo-session-start.sh", &home, "{}", env);
+        let context: serde_json::Value = serde_json::from_slice(&cursor.stdout).unwrap();
+        assert!(
+            context["additional_context"]
+                .as_str()
+                .unwrap()
+                .contains("What's in memory"),
+            "{env:?}"
+        );
+    }
 }
 
 #[test]
