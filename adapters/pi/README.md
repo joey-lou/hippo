@@ -1,7 +1,9 @@
 # Pi adapter
 
 Pi loads this adapter as a skill and a session extension. Both call the `hippo`
-command. JSON shapes and exit codes are in [`adapters/README.md`](../README.md).
+command. The model backend does not matter: OpenRouter, or any other provider Pi
+is logged into, uses the same extension. JSON shapes and exit codes are in
+[`adapters/README.md`](../README.md).
 
 ```bash
 hippo adapter install pi
@@ -17,16 +19,4 @@ From a checkout, `install.sh` links this working tree instead. Either way you ge
 
 `hippo add` and `hippo update` commit and push on their own, so a Pi `bash` call needs no hook.
 
-On `cursor/*` models the Cursor SDK runs the Cursor adapter's hooks for file
-edits and the end-of-turn check, so the extension skips those turns. The Cursor
-session-start hook skips its digest when `PI_CODING_AGENT` is set, which leaves
-the Pi digest as the only one.
-
-`bin/hippo-pi.sh` is the same contract as a shell command, for a harness that
-cannot load the extension:
-
-```bash
-hippo-pi.sh [--home PATH] digest
-hippo-pi.sh [--home PATH] recall TEXT
-hippo-pi.sh [--home PATH] save     # JSON on stdin
-```
+Log the model in separately, for example `/login openrouter` or `OPENROUTER_API_KEY`. This adapter does not configure providers.

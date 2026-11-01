@@ -270,7 +270,7 @@ fn source_comes_from_the_agent_environment() {
     let cases: &[SourceCase] = &[
         (
             "Inside pi",
-            &[("PI_CODING_AGENT", "true"), ("CURSOR_AGENT", "1")],
+            &[("PI_CODING_AGENT", "true")],
             &[],
             "source: pi",
         ),

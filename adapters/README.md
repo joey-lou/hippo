@@ -89,8 +89,7 @@ failed commit or push does not undo the write: the command still exits `0` and
 adds `memory saved but not synced: <git error>` to `warnings`.
 
 `--source` defaults to `HIPPO_SOURCE`, then `pi` when `PI_CODING_AGENT` is set,
-then `cursor` when `CURSOR_AGENT` is set. Pi comes first because a Cursor model
-inside Pi sets both.
+then `cursor` when `CURSOR_AGENT` is set. Each harness sets its own variable.
 
 ### `hippo sync [--file PATH]`
 Reindexes changed files, then commits and pushes the same way. Emits

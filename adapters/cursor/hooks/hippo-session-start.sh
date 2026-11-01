@@ -6,12 +6,6 @@
 
 cat >/dev/null 2>&1  # stdin unused
 
-# Inside Pi, the Pi adapter already injected the digest.
-if [ -n "${PI_CODING_AGENT:-}" ]; then
-  echo '{}'
-  exit 0
-fi
-
 hippo_bin="$(command -v hippo 2>/dev/null || true)"
 if [ -z "$hippo_bin" ] && [ -x "$HOME/.local/bin/hippo" ]; then
   hippo_bin="$HOME/.local/bin/hippo"
