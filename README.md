@@ -63,5 +63,5 @@ From a checkout of this repo, `cargo install --path .` installs that build. `ada
 `Cargo.toml` on `main` stays at `0.0.0-dev`. Push a tag on the latest `main` commit and [the release workflow](.github/workflows/release.yml) publishes that version and attaches binaries plus `hippo-adapters.tar.gz`.
 
 ```bash
-git tag v0.0.7 && git push origin v0.0.7
+git tag v0.0.8 && git push origin v0.0.8
 ```
